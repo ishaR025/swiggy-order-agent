@@ -1,0 +1,37 @@
+{
+  "name": "swiggy-order-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "group-setup": "tsx src/whatsapp/groupSetup.ts",
+    "swiggy-login": "tsx src/scripts/swiggyLogin.ts",
+    "resolve-test": "tsx src/scripts/resolveTest.ts",
+    "place-test": "tsx src/scripts/placeTest.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@hapi/boom": "^10.0.1",
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "better-sqlite3": "^12.4.1",
+    "dotenv": "^16.4.7",
+    "node-cron": "^4.2.1",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.0.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

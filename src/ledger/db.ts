@@ -38,6 +38,20 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- A scheduled trigger fires outside any guaranteed 24h WhatsApp active window, so it
+  -- can only send a pre-approved template nudge, not the free-form cart itself. This
+  -- tracks that nudge until the person replies (any reply reopens the window - see
+  -- requestOrder() in orders/pendingOrders.ts) or it expires unanswered.
+  CREATE TABLE IF NOT EXISTS schedule_nudges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_id INTEGER NOT NULL,
+    created_by_jid TEXT NOT NULL,
+    intent_text TEXT NOT NULL,
+    whatsapp_msg_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'awaiting_reply',  -- awaiting_reply | resolved | expired
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   -- food and instamart are independently-protected OAuth resources on mcp.swiggy.com
   -- (confirmed empirically: authenticating one does not authenticate the other), so each
   -- gets its own row/token rather than sharing a single stored credential.

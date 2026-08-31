@@ -3,8 +3,14 @@ import { config, requireForRuntime } from "./config.js";
 import { startWhatsAppWebhook, sendMessage, type IncomingChatMessage } from "./whatsapp/client.js";
 import { parseIntent } from "./commands/parseIntent.js";
 import { requestOrder, confirmOrder, rehydratePendingOrders } from "./orders/pendingOrders.js";
-import { createSchedule, cancelSchedules, rehydrateSchedules } from "./scheduler/cron.js";
-import { getBalances } from "./ledger/queries.js";
+import {
+  createSchedule,
+  cancelSchedules,
+  rehydrateSchedules,
+  rehydrateNudges,
+  clearNudgeExpiry,
+} from "./scheduler/cron.js";
+import { getBalances, getActiveNudgeForSender, markNudgeResolved } from "./ledger/queries.js";
 import { storeToken, getTokenStatus, type SwiggyService } from "./swiggy/token.js";
 import "./ledger/db.js"; // ensures tables exist before anything else runs
 
@@ -25,6 +31,7 @@ function main() {
 
   rehydratePendingOrders();
   rehydrateSchedules();
+  rehydrateNudges();
   startAdminServer();
 
   checkTokenHealth();
@@ -32,6 +39,17 @@ function main() {
 }
 
 async function handleMessage(msg: IncomingChatMessage) {
+  // A reply to an outstanding scheduled-order nudge reopens the 24h window and is
+  // the trigger to actually resolve + send the real cart - consume it here, before
+  // normal intent parsing, regardless of what the reply text says.
+  const nudge = getActiveNudgeForSender(msg.from);
+  if (nudge) {
+    markNudgeResolved(nudge.id);
+    clearNudgeExpiry(nudge.id);
+    await requestOrder(msg.from, nudge.intent_text);
+    return;
+  }
+
   const intent = parseIntent(msg);
 
   switch (intent.type) {

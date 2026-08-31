@@ -95,3 +95,54 @@ export function getBalances(): Balance[] {
     )
     .all() as Balance[];
 }
+
+export type ScheduleNudgeRow = {
+  id: number;
+  schedule_id: number;
+  created_by_jid: string;
+  intent_text: string;
+  whatsapp_msg_id: string;
+  status: "awaiting_reply" | "resolved" | "expired";
+  created_at: string;
+};
+
+export function insertScheduleNudge(params: {
+  scheduleId: number;
+  createdByJid: string;
+  intentText: string;
+  whatsappMsgId: string;
+}): number {
+  const result = db
+    .prepare(
+      `INSERT INTO schedule_nudges (schedule_id, created_by_jid, intent_text, whatsapp_msg_id)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run(params.scheduleId, params.createdByJid, params.intentText, params.whatsappMsgId);
+  return Number(result.lastInsertRowid);
+}
+
+/** The most recent outstanding nudge for this person, if any - used to detect
+ * that an incoming message is "the reply that reopens the window" for a
+ * scheduled order rather than a fresh, unrelated message. */
+export function getActiveNudgeForSender(jid: string): ScheduleNudgeRow | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM schedule_nudges WHERE created_by_jid = ? AND status = 'awaiting_reply'
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(jid) as ScheduleNudgeRow | undefined;
+}
+
+export function markNudgeResolved(id: number): void {
+  db.prepare(`UPDATE schedule_nudges SET status = 'resolved' WHERE id = ?`).run(id);
+}
+
+export function markNudgeExpired(id: number): void {
+  db.prepare(`UPDATE schedule_nudges SET status = 'expired' WHERE id = ?`).run(id);
+}
+
+export function getAwaitingNudges(): ScheduleNudgeRow[] {
+  return db
+    .prepare(`SELECT * FROM schedule_nudges WHERE status = 'awaiting_reply'`)
+    .all() as ScheduleNudgeRow[];
+}

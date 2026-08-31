@@ -11,6 +11,7 @@
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json",
     "swiggy-login": "tsx src/scripts/swiggyLogin.ts",
+    "setup-whatsapp-template": "tsx src/scripts/setupWhatsAppTemplate.ts",
     "resolve-test": "tsx src/scripts/resolveTest.ts",
     "place-test": "tsx src/scripts/placeTest.ts"
   },

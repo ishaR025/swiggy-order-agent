@@ -20,6 +20,9 @@ export const config = {
   metaAppSecret: process.env.META_APP_SECRET ?? "",
   metaWebhookVerifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN ?? "",
   metaWebhookPort: Number(process.env.META_WEBHOOK_PORT ?? "8788"),
+  // Only needed for src/scripts/setupWhatsAppTemplate.ts (template creation/status
+  // checks use the WABA id; sending a message only needs the phone number id above).
+  metaWabaId: process.env.META_WABA_ID ?? "",
   // Comma-separated WhatsApp numbers (E.164 without "+", e.g. "919804340701")
   // allow-listed to talk to the bot - the two flatmates.
   allowedNumbers: (process.env.WHATSAPP_ALLOWED_NUMBERS ?? "")

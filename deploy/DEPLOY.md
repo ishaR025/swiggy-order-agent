@@ -54,6 +54,8 @@ cp .env.example .env
      value in the dashboard in step 6.
    - `WHATSAPP_ALLOWED_NUMBERS` - both flatmates' numbers, comma-separated, E.164
      without `+` (e.g. `919804340701,919812345678`).
+   - `META_WABA_ID` - the WhatsApp Business Account ID from the same API Setup page
+     (only needed for the template setup script in step 6a, not the bot itself).
 
 ## 4. Expose the webhook over public HTTPS
 
@@ -104,6 +106,24 @@ In the Meta App Dashboard, WhatsApp > Configuration > Webhook:
 
 Meta immediately sends a verification GET request - `pm2 logs` should show no errors,
 and the dashboard should show it as verified.
+
+## 6a. Create the scheduled-order message template
+
+Recurring orders (e.g. "order lunch every weekday at 1pm") need this to nudge you
+outside your active 24h window - do this once, well before your first schedule fires:
+
+```bash
+npm run setup-whatsapp-template
+```
+
+This submits the `scheduled_order_nudge` template for Meta's review. Check on it with:
+
+```bash
+npm run setup-whatsapp-template -- --status
+```
+
+Wait for `"status": "APPROVED"` (usually minutes to about a day) before relying on any
+schedule - until then, a scheduled trigger's nudge will fail silently in `pm2 logs`.
 
 ## 7. First Swiggy login
 

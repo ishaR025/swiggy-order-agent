@@ -83,10 +83,14 @@ API - each person gets their own DM thread with the bot instead.
 
 One real consequence: the 24-hour window means the bot can only send
 free-form text after that person has messaged it recently. A scheduled
-trigger (e.g. daily lunch) firing outside that window needs a pre-approved
-WhatsApp message template instead - not yet wired in here, so until a
-template exists and is approved, the scheduled nudge only works if you've
-messaged the bot within the last 24h.
+trigger (e.g. daily lunch) fires outside that window, so it sends a short
+pre-approved **template** nudge instead ("Time for your scheduled order:
+{{1}}. Reply to see today's cart") - whatever you reply with reopens the
+window, and *that* triggers the real resolve-and-send-cart flow as free-form
+text, same as an ad-hoc request. Run `npm run setup-whatsapp-template` once
+to create and submit that template for Meta's review before your first
+schedule fires (`npm run setup-whatsapp-template -- --status` to check
+approval).
 
 ## Why a VPS, not a laptop
 
@@ -101,7 +105,10 @@ freshly-obtained token to a remote deployment.
 ## Known limitations
 
 - No group chat - see "Why DMs, not a group" above.
-- Scheduled (cron) triggers need an approved WhatsApp message template to
-  reliably fire outside a 24h active window - not yet built.
+- Scheduled (cron) triggers need the `scheduled_order_nudge` WhatsApp
+  template approved by Meta (`npm run setup-whatsapp-template`) before
+  they'll fire outside a 24h active window - built, but approval is on
+  Meta's timeline (usually minutes to about a day) and out of this code's
+  control.
 - No refresh tokens for Swiggy's MCP servers (v1.0) - the 5-day manual
   re-login is unavoidable for now.

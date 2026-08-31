@@ -5,7 +5,24 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { db } from "../ledger/db.js";
 import { sendMessage } from "../whatsapp/client.js";
-import { requestOrder } from "../orders/pendingOrders.js";
+import { sendScheduleNudge, SCHEDULE_NUDGE_TEMPLATE_NAME } from "../whatsapp/templates.js";
+import {
+  insertScheduleNudge,
+  getAwaitingNudges,
+  markNudgeExpired,
+  type ScheduleNudgeRow,
+} from "../ledger/queries.js";
+
+const NUDGE_TIMEOUT_MS = 6 * 60 * 60 * 1000; // 6 hours
+const nudgeExpiryTimers = new Map<number, NodeJS.Timeout>();
+
+function scheduleNudgeExpiry(nudge: Pick<ScheduleNudgeRow, "id" | "intent_text">, delayMs: number) {
+  const timer = setTimeout(() => {
+    nudgeExpiryTimers.delete(nudge.id);
+    markNudgeExpired(nudge.id);
+  }, Math.max(delayMs, 0));
+  nudgeExpiryTimers.set(nudge.id, timer);
+}
 
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
@@ -42,15 +59,23 @@ type ActiveSchedule = { id: number; task: ScheduledTask };
 const active = new Map<number, ActiveSchedule>();
 
 function register(id: number, createdByJid: string, cronExpr: string, intentText: string) {
-  const task = cron.schedule(cronExpr, () => {
-    // NOTE: this fires outside any 24h "user just messaged" window, so on the
-    // real Cloud API this free-form sendMessage() call will be rejected unless
-    // createdByJid happened to message the bot recently. Once a WhatsApp
-    // message template is created and approved in the Meta dashboard, swap
-    // this for sendTemplateMessage() - see src/whatsapp/client.ts.
-    requestOrder(createdByJid, intentText).catch((err) =>
-      console.error(`Scheduled order (${intentText}) failed:`, err),
-    );
+  const task = cron.schedule(cronExpr, async () => {
+    // Fires outside any 24h "user just messaged" window, so it can only send the
+    // pre-approved nudge template, not the free-form cart itself. Whatever the
+    // person replies with next reopens the window and triggers the real
+    // resolve+cart flow - see index.ts's nudge-reply check ahead of parseIntent().
+    try {
+      const msgId = await sendScheduleNudge(createdByJid, intentText);
+      const nudgeId = insertScheduleNudge({
+        scheduleId: id,
+        createdByJid,
+        intentText,
+        whatsappMsgId: msgId,
+      });
+      scheduleNudgeExpiry({ id: nudgeId, intent_text: intentText }, NUDGE_TIMEOUT_MS);
+    } catch (err) {
+      console.error(`Scheduled nudge for "${intentText}" failed:`, err);
+    }
   });
   active.set(id, { id, task });
 }
@@ -76,8 +101,8 @@ export async function createSchedule(createdByJid: string, requestText: string):
 
   await sendMessage(
     createdByJid,
-    `📅 Scheduled: "${intentText}" (cron: ${cronExpr}). Each time, I'll message you here for a 👍/"yes" before ordering - never automatically. ` +
-      `Note: until a WhatsApp message template is approved for this, the daily nudge only works if you've messaged me within the last 24h.`,
+    `📅 Scheduled: "${intentText}" (cron: ${cronExpr}). Each time, I'll nudge you here, and once you reply I'll show today's cart for a 👍/"yes" before ordering - never automatically. ` +
+      `(Requires the "${SCHEDULE_NUDGE_TEMPLATE_NAME}" WhatsApp template to be approved - run \`npm run setup-whatsapp-template\` once if you haven't.)`,
   );
 }
 
@@ -109,5 +134,28 @@ export function rehydrateSchedules(): void {
   for (const row of rows) {
     register(row.id, row.created_by_jid, row.cron_expression, row.intent_text);
     console.log(`Rehydrated schedule #${row.id}: "${row.intent_text}" (${row.cron_expression})`);
+  }
+}
+
+/** Call when a nudge is resolved (its reply arrived) to cancel its pending auto-expiry. */
+export function clearNudgeExpiry(nudgeId: number): void {
+  const timer = nudgeExpiryTimers.get(nudgeId);
+  if (timer) {
+    clearTimeout(timer);
+    nudgeExpiryTimers.delete(nudgeId);
+  }
+}
+
+/** Re-registers in-memory expiry timers for any nudges still awaiting a reply
+ * after a restart - call once on process boot alongside rehydrateSchedules(). */
+export function rehydrateNudges(): void {
+  for (const nudge of getAwaitingNudges()) {
+    const elapsed = Date.now() - new Date(nudge.created_at + "Z").getTime();
+    const remaining = NUDGE_TIMEOUT_MS - elapsed;
+    if (remaining <= 0) {
+      markNudgeExpired(nudge.id);
+      continue;
+    }
+    scheduleNudgeExpiry(nudge, remaining);
   }
 }

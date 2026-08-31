@@ -1,4 +1,4 @@
-import type { IncomingGroupMessage } from "../whatsapp/client.js";
+import type { IncomingChatMessage } from "../whatsapp/client.js";
 import { getPendingOrders } from "../ledger/queries.js";
 
 export type Intent =
@@ -15,26 +15,28 @@ const SCHEDULE_CANCEL_RE = /\bcancel\b.*\bschedule\b|\bstop\b.*\b(lunch|order)\b
 const SCHEDULE_CREATE_RE =
   /\bevery\s+(weekday|day|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
 
-/** Classifies one incoming group text message into an action for index.ts to take. */
-export function parseIntent(msg: IncomingGroupMessage): Intent {
+/**
+ * Classifies one incoming DM into an action for index.ts to take. Each person's
+ * orders/confirmations are scoped to their own number - pending-order lookups
+ * only ever consider orders that same person requested.
+ */
+export function parseIntent(msg: IncomingChatMessage): Intent {
   const text = msg.text.trim();
+  const myPending = getPendingOrders().filter((o) => o.requester_jid === msg.from);
 
-  if (msg.quotedMessageId) {
-    const pending = getPendingOrders().find(
-      (o) => o.whatsapp_msg_id === msg.quotedMessageId,
-    );
+  if (msg.contextMessageId) {
+    const pending = myPending.find((o) => o.whatsapp_msg_id === msg.contextMessageId);
     if (pending && YES_RE.test(text)) {
       return { type: "confirm", whatsappMsgId: pending.whatsapp_msg_id };
     }
   }
 
   if (YES_RE.test(text) && text.length < 20) {
-    // A short bare "yes" with no quote: confirm the single most recent pending
-    // cart, if there is exactly one - ambiguous otherwise, so ignore rather than
-    // guess which of several pending orders was meant.
-    const pending = getPendingOrders();
-    if (pending.length === 1) {
-      return { type: "confirm", whatsappMsgId: pending[0].whatsapp_msg_id };
+    // A short bare "yes" with no quote: confirm this person's single most
+    // recent pending cart, if there is exactly one - ambiguous otherwise, so
+    // ignore rather than guess which one was meant.
+    if (myPending.length === 1) {
+      return { type: "confirm", whatsappMsgId: myPending[0].whatsapp_msg_id };
     }
   }
 

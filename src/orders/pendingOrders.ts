@@ -1,5 +1,4 @@
-import type { WASocket } from "@whiskeysockets/baileys";
-import { sendGroupMessage } from "../whatsapp/client.js";
+import { sendMessage } from "../whatsapp/client.js";
 import { resolveOrder, type ResolvedOrder } from "../swiggy/resolveOrder.js";
 import { placeOrder } from "../swiggy/placeOrder.js";
 import {
@@ -35,33 +34,31 @@ function formatCartMessage(resolved: ResolvedOrder, requestText: string): string
 }
 
 /**
- * Runs the full ad-hoc/scheduled order flow: resolve -> post cart -> track as
- * pending, with a timeout that auto-expires it if nobody confirms. Never calls
- * placeOrder() itself - that only happens from confirmOrder() below, in
- * response to an explicit human 👍/"yes".
+ * Runs the full ad-hoc/scheduled order flow: resolve -> post cart to the
+ * requester's own DM thread -> track as pending, with a timeout that
+ * auto-expires it if nobody confirms. Never calls placeOrder() itself - that
+ * only happens from confirmOrder() below, in response to an explicit 👍/"yes"
+ * from that same person (each person's orders are independent - see the
+ * project's cross-notify decision).
  */
-export async function requestOrder(
-  sock: WASocket,
-  requesterJid: string,
-  requestText: string,
-): Promise<void> {
+export async function requestOrder(requesterNumber: string, requestText: string): Promise<void> {
   let resolved: ResolvedOrder;
   try {
     resolved = await resolveOrder(requestText);
   } catch (err) {
-    await sendGroupMessage(
-      sock,
+    await sendMessage(
+      requesterNumber,
       `Couldn't resolve "${requestText}": ${err instanceof Error ? err.message : String(err)}`,
     );
     return;
   }
 
   const cartText = formatCartMessage(resolved, requestText);
-  const msgId = await sendGroupMessage(sock, cartText);
+  const msgId = await sendMessage(requesterNumber, cartText);
 
   insertPendingOrder({
     whatsappMsgId: msgId,
-    requesterJid,
+    requesterJid: requesterNumber,
     requesterName: null,
     requestText,
     resolved,
@@ -72,9 +69,10 @@ export async function requestOrder(
     const row = getOrderByMessageId(msgId);
     if (row?.status === "pending_confirmation") {
       markOrderExpired(msgId);
-      sendGroupMessage(sock, `⌛ Cart for "${requestText}" expired - nobody confirmed in time.`).catch(
-        (err) => console.error("Failed to post expiry notice:", err),
-      );
+      sendMessage(
+        requesterNumber,
+        `⌛ Cart for "${requestText}" expired - nobody confirmed in time.`,
+      ).catch((err) => console.error("Failed to post expiry notice:", err));
     }
   }, CONFIRMATION_TIMEOUT_MS);
   expiryTimers.set(msgId, timer);
@@ -85,9 +83,11 @@ export async function requestOrder(
  * This is the only path that ever calls placeOrder() - a deterministic replay
  * of exactly what was shown and approved, nothing re-decided here.
  */
-export async function confirmOrder(sock: WASocket, whatsappMsgId: string): Promise<void> {
+export async function confirmOrder(whatsappMsgId: string): Promise<void> {
   const row = getOrderByMessageId(whatsappMsgId);
   if (!row || row.status !== "pending_confirmation") return;
+
+  const requesterNumber = row.requester_jid;
 
   const timer = expiryTimers.get(whatsappMsgId);
   if (timer) {
@@ -103,8 +103,8 @@ export async function confirmOrder(sock: WASocket, whatsappMsgId: string): Promi
 
   if (result.isError) {
     markOrderFailed(whatsappMsgId);
-    await sendGroupMessage(
-      sock,
+    await sendMessage(
+      requesterNumber,
       `❌ Order failed: ${result.summaryText || "unknown error"}. Check get_food_orders/get_orders before retrying.`,
     );
     return;
@@ -112,7 +112,7 @@ export async function confirmOrder(sock: WASocket, whatsappMsgId: string): Promi
 
   const swiggyOrderId = extractOrderId(result.summaryText) ?? "unknown";
   markOrderPlaced(whatsappMsgId, swiggyOrderId);
-  await sendGroupMessage(sock, `✅ Order placed! ${result.summaryText}`);
+  await sendMessage(requesterNumber, `✅ Order placed! ${result.summaryText}`);
 }
 
 function extractOrderId(text: string): string | null {
@@ -127,7 +127,7 @@ function extractOrderId(text: string): string | null {
 }
 
 /** Re-registers in-memory expiry timers for any orders still pending after a restart. */
-export function rehydratePendingOrders(sock: WASocket): void {
+export function rehydratePendingOrders(): void {
   for (const row of getPendingOrders()) {
     const elapsed = Date.now() - new Date(row.created_at + "Z").getTime();
     const remaining = CONFIRMATION_TIMEOUT_MS - elapsed;
@@ -140,9 +140,10 @@ export function rehydratePendingOrders(sock: WASocket): void {
       const current = getOrderByMessageId(row.whatsapp_msg_id);
       if (current?.status === "pending_confirmation") {
         markOrderExpired(row.whatsapp_msg_id);
-        sendGroupMessage(sock, `⌛ Cart for "${row.request_text}" expired - nobody confirmed in time.`).catch(
-          (err) => console.error("Failed to post expiry notice:", err),
-        );
+        sendMessage(
+          row.requester_jid,
+          `⌛ Cart for "${row.request_text}" expired - nobody confirmed in time.`,
+        ).catch((err) => console.error("Failed to post expiry notice:", err));
       }
     }, remaining);
     expiryTimers.set(row.whatsapp_msg_id, timer);

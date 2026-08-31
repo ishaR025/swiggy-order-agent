@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { config, requireForRuntime } from "./config.js";
-import { connectWhatsApp, sendGroupMessage, type IncomingGroupMessage } from "./whatsapp/client.js";
+import { startWhatsAppWebhook, sendMessage, type IncomingChatMessage } from "./whatsapp/client.js";
 import { parseIntent } from "./commands/parseIntent.js";
 import { requestOrder, confirmOrder, rehydratePendingOrders } from "./orders/pendingOrders.js";
 import { createSchedule, cancelSchedules, rehydrateSchedules } from "./scheduler/cron.js";
@@ -10,47 +10,45 @@ import "./ledger/db.js"; // ensures tables exist before anything else runs
 
 requireForRuntime();
 
-async function main() {
-  const sock = await connectWhatsApp({
-    onGroupMessage: (msg) => {
-      handleGroupMessage(sock, msg).catch((err) =>
-        console.error("Error handling group message:", err),
-      );
+function main() {
+  startWhatsAppWebhook({
+    onMessage: (msg) => {
+      handleMessage(msg).catch((err) => console.error("Error handling message:", err));
     },
     onReaction: (reaction) => {
       if (reaction.emoji !== "👍") return; // ignore removals and other emoji
-      confirmOrder(sock, reaction.targetMessageId).catch((err) =>
+      confirmOrder(reaction.targetMessageId).catch((err) =>
         console.error("Error confirming via reaction:", err),
       );
     },
   });
 
-  rehydratePendingOrders(sock);
-  rehydrateSchedules(sock);
+  rehydratePendingOrders();
+  rehydrateSchedules();
   startAdminServer();
 
-  checkTokenHealth(sock);
-  setInterval(() => checkTokenHealth(sock), 60 * 60 * 1000); // hourly
+  checkTokenHealth();
+  setInterval(checkTokenHealth, 60 * 60 * 1000); // hourly
 }
 
-async function handleGroupMessage(sock: Awaited<ReturnType<typeof connectWhatsApp>>, msg: IncomingGroupMessage) {
+async function handleMessage(msg: IncomingChatMessage) {
   const intent = parseIntent(msg);
 
   switch (intent.type) {
     case "confirm":
-      await confirmOrder(sock, intent.whatsappMsgId);
+      await confirmOrder(intent.whatsappMsgId);
       break;
     case "order":
-      await requestOrder(sock, msg.senderJid, intent.text);
+      await requestOrder(msg.from, intent.text);
       break;
     case "schedule_create":
-      await createSchedule(sock, msg.senderJid, intent.text);
+      await createSchedule(msg.from, intent.text);
       break;
     case "schedule_cancel":
-      await cancelSchedules(sock);
+      await cancelSchedules(msg.from);
       break;
     case "balance":
-      await sendGroupMessage(sock, formatBalances());
+      await sendMessage(msg.from, formatBalances());
       break;
     case "ignore":
       break;
@@ -60,23 +58,24 @@ async function handleGroupMessage(sock: Awaited<ReturnType<typeof connectWhatsAp
 function formatBalances(): string {
   const balances = getBalances();
   if (balances.length === 0) return "No placed orders yet.";
-  const lines = balances.map((b) => `  ${b.jid.split("@")[0]}: ₹${b.totalPlaced.toFixed(2)}`);
+  const lines = balances.map((b) => `  ${b.jid}: ₹${b.totalPlaced.toFixed(2)}`);
   return ["💰 Placed-order totals:", ...lines].join("\n");
 }
 
-function checkTokenHealth(sock: Awaited<ReturnType<typeof connectWhatsApp>>) {
+function checkTokenHealth() {
   for (const service of ["food", "instamart"] as SwiggyService[]) {
     const status = getTokenStatus(service);
+    let warning: string | null = null;
     if (status.state === "expired" || status.state === "missing") {
-      sendGroupMessage(
-        sock,
-        `⚠️ Swiggy ${service} login is ${status.state}. Run \`npm run swiggy-login\` and push the new token, or orders will fail.`,
-      ).catch((err) => console.error("Failed to post token warning:", err));
+      warning = `⚠️ Swiggy ${service} login is ${status.state}. Run \`npm run swiggy-login\` and push the new token, or orders will fail.`;
     } else if (status.state === "expiring_soon") {
-      sendGroupMessage(
-        sock,
-        `⚠️ Swiggy ${service} login expires in ~${status.hoursLeft}h. Run \`npm run swiggy-login\` soon.`,
-      ).catch((err) => console.error("Failed to post token warning:", err));
+      warning = `⚠️ Swiggy ${service} login expires in ~${status.hoursLeft}h. Run \`npm run swiggy-login\` soon.`;
+    }
+    if (!warning) continue;
+    for (const number of config.allowedNumbers) {
+      sendMessage(number, warning).catch((err) =>
+        console.error(`Failed to post token warning to ${number}:`, err),
+      );
     }
   }
 }
@@ -84,7 +83,8 @@ function checkTokenHealth(sock: Awaited<ReturnType<typeof connectWhatsApp>>) {
 /**
  * Minimal local admin server: a health check and the endpoint `npm run swiggy-login`
  * PUTs a freshly-obtained token to. Bind to localhost only and reach it over an SSH
- * tunnel or a firewall rule scoped to your own IP - see .env.example.
+ * tunnel or a firewall rule scoped to your own IP - see .env.example. This is separate
+ * from the public WhatsApp webhook server (different port, localhost-only).
  */
 function startAdminServer() {
   const server = createServer((req, res) => {
@@ -128,7 +128,4 @@ function startAdminServer() {
   });
 }
 
-main().catch((err) => {
-  console.error("Fatal error starting bot:", err);
-  process.exit(1);
-});
+main();

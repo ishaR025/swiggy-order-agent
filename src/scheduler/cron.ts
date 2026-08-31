@@ -2,10 +2,9 @@ import cron, { type ScheduledTask } from "node-cron";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import type { WASocket } from "@whiskeysockets/baileys";
 import { config } from "../config.js";
 import { db } from "../ledger/db.js";
-import { sendGroupMessage } from "../whatsapp/client.js";
+import { sendMessage } from "../whatsapp/client.js";
 import { requestOrder } from "../orders/pendingOrders.js";
 
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
@@ -42,25 +41,26 @@ async function parseScheduleRequest(
 type ActiveSchedule = { id: number; task: ScheduledTask };
 const active = new Map<number, ActiveSchedule>();
 
-function register(sock: WASocket, id: number, cronExpr: string, intentText: string) {
+function register(id: number, createdByJid: string, cronExpr: string, intentText: string) {
   const task = cron.schedule(cronExpr, () => {
-    requestOrder(sock, "scheduler", intentText).catch((err) =>
+    // NOTE: this fires outside any 24h "user just messaged" window, so on the
+    // real Cloud API this free-form sendMessage() call will be rejected unless
+    // createdByJid happened to message the bot recently. Once a WhatsApp
+    // message template is created and approved in the Meta dashboard, swap
+    // this for sendTemplateMessage() - see src/whatsapp/client.ts.
+    requestOrder(createdByJid, intentText).catch((err) =>
       console.error(`Scheduled order (${intentText}) failed:`, err),
     );
   });
   active.set(id, { id, task });
 }
 
-export async function createSchedule(
-  sock: WASocket,
-  createdByJid: string,
-  requestText: string,
-): Promise<void> {
+export async function createSchedule(createdByJid: string, requestText: string): Promise<void> {
   const { cron: cronExpr, intentText } = await parseScheduleRequest(requestText);
 
   if (!cron.validate(cronExpr)) {
-    await sendGroupMessage(
-      sock,
+    await sendMessage(
+      createdByJid,
       `Couldn't turn "${requestText}" into a valid schedule (got cron "${cronExpr}"). Try rephrasing.`,
     );
     return;
@@ -72,21 +72,22 @@ export async function createSchedule(
     )
     .run(createdByJid, cronExpr, intentText);
 
-  register(sock, Number(result.lastInsertRowid), cronExpr, intentText);
+  register(Number(result.lastInsertRowid), createdByJid, cronExpr, intentText);
 
-  await sendGroupMessage(
-    sock,
-    `📅 Scheduled: "${intentText}" (cron: ${cronExpr}). Each time, I'll post the cart here for a 👍/"yes" before ordering - never automatically.`,
+  await sendMessage(
+    createdByJid,
+    `📅 Scheduled: "${intentText}" (cron: ${cronExpr}). Each time, I'll message you here for a 👍/"yes" before ordering - never automatically. ` +
+      `Note: until a WhatsApp message template is approved for this, the daily nudge only works if you've messaged me within the last 24h.`,
   );
 }
 
-export async function cancelSchedules(sock: WASocket): Promise<void> {
+export async function cancelSchedules(createdByJid: string): Promise<void> {
   const rows = db
-    .prepare(`SELECT id, intent_text FROM schedules WHERE active = 1`)
-    .all() as { id: number; intent_text: string }[];
+    .prepare(`SELECT id, intent_text FROM schedules WHERE active = 1 AND created_by_jid = ?`)
+    .all(createdByJid) as { id: number; intent_text: string }[];
 
   if (rows.length === 0) {
-    await sendGroupMessage(sock, "No active schedules to cancel.");
+    await sendMessage(createdByJid, "No active schedules to cancel.");
     return;
   }
 
@@ -96,20 +97,17 @@ export async function cancelSchedules(sock: WASocket): Promise<void> {
     db.prepare(`UPDATE schedules SET active = 0 WHERE id = ?`).run(row.id);
   }
 
-  await sendGroupMessage(
-    sock,
-    `Cancelled: ${rows.map((r) => `"${r.intent_text}"`).join(", ")}.`,
-  );
+  await sendMessage(createdByJid, `Cancelled: ${rows.map((r) => `"${r.intent_text}"`).join(", ")}.`);
 }
 
 /** Re-registers every active schedule from the DB - call once on process boot. */
-export function rehydrateSchedules(sock: WASocket): void {
+export function rehydrateSchedules(): void {
   const rows = db
-    .prepare(`SELECT id, cron_expression, intent_text FROM schedules WHERE active = 1`)
-    .all() as { id: number; cron_expression: string; intent_text: string }[];
+    .prepare(`SELECT id, created_by_jid, cron_expression, intent_text FROM schedules WHERE active = 1`)
+    .all() as { id: number; created_by_jid: string; cron_expression: string; intent_text: string }[];
 
   for (const row of rows) {
-    register(sock, row.id, row.cron_expression, row.intent_text);
+    register(row.id, row.created_by_jid, row.cron_expression, row.intent_text);
     console.log(`Rehydrated schedule #${row.id}: "${row.intent_text}" (${row.cron_expression})`);
   }
 }
